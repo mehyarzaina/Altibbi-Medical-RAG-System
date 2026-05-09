@@ -1,0 +1,14 @@
+pydantic
+sqlalchemy
+requests
+python-decouple
+psycopg[binary] 
+schedule
+pandas
+beautifulsoup4
+sqlmodel
+requests
+mysql-connector-python
+dotenv
+pymysql
+cryptography

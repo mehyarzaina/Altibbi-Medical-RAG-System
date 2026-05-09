@@ -1,0 +1,7 @@
+.venv
+venv
+chunks.json
+.env
+env
+
+_pycache_
