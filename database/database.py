@@ -15,5 +15,5 @@ DATABASE_URL = f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}/{DB_NAME}"
 engine = create_engine(DATABASE_URL, echo=False) #connect python app and database
 
 def create_db():
-    """Create database"""
+    """Create all tables"""
     SQLModel.metadata.create_all(engine)

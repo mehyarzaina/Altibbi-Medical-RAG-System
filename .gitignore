@@ -6,3 +6,10 @@ env
 
 
 __pycache__
+
+Altibbi Chatbot.docx
+articles_export.xlsx
+RAG\__pycache__
+
+database\__pycache__
+articles_scraping\__pycache__

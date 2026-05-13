@@ -1,12 +1,15 @@
-# RAG/server.py
-
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from pymilvus import connections, Collection
 from mcp.server.fastmcp import FastMCP
+from sqlmodel import Session, select
+from typing import Optional
 import requests
 import os
 from dotenv import load_dotenv
+
+from database.database import engine
+from database.models import Article
 
 load_dotenv()
 
@@ -21,16 +24,19 @@ connections.connect(uri=ZILLIZ_URI, token=ZILLIZ_TOKEN)
 col = Collection(name=COLLECTION_NAME)
 col.load()
 
-# ── Auth middleware ────────────────────────────────────────────────────────
-
-UNPROTECTED_PATHS = {"/docs", "/openapi.json", "/redoc"}
+# ── MySQL Config ────────────────────────────────────────────────────────
+DEFAULT_TOP_K = 3          # default number of results returned
+MAX_TOP_K     = 100        # hard upper limit the caller may request
+ 
+ # ── Auth middleware ────────────────────────────────────────────────────────
+UNPROTECTED_PATHS = {"/docs", "/openapi.json", "/redoc"} # for swager
 UNPROTECTED_HOSTS = {"localhost", "127.0.0.1"}
+
 
 class StaticTokenMiddleware:
     def __init__(self, app, token: str):
         self.app = app
         self.token = token
-
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http" and self.token:
             path = scope.get("path", "")
@@ -41,12 +47,10 @@ class StaticTokenMiddleware:
             if path not in UNPROTECTED_PATHS and host not in UNPROTECTED_HOSTS:
                 auth = headers.get(b"authorization", b"").decode()
                 api_key = headers.get(b"x-api-key", b"").decode().strip()
-
                 token_valid = (
                     (auth.lower().startswith("bearer ") and auth[7:].strip() == self.token)
                     or api_key == self.token
                 )
-
                 if not token_valid:
                     body = b'{"detail": "Unauthorized. Provide Authorization: Bearer <token> or X-API-Key: <token>."}'
                     await send({
@@ -64,26 +68,24 @@ class StaticTokenMiddleware:
                         "more_body": False,
                     })
                     return
-
         await self.app(scope, receive, send)
 
-# ── App setup ──────────────────────────────────────────────────────────────
 
+# ── App setup ──────────────────────────────────────────────────────────────
 mcp = FastMCP("Altibbi RAG")
 app = FastAPI(title="Altibbi RAG")
-app.mount("/mcp", mcp.sse_app())
-app.add_middleware(StaticTokenMiddleware, token=API_TOKEN)
+app.mount("/mcp", mcp.sse_app()) 
+app.add_middleware(StaticTokenMiddleware, token=API_TOKEN) # authentication layer
+
 
 # ── Request / Response models for Fast API ──────────────────────────────────────────────
 class EmbedRequest(BaseModel):
     text: str
-
 class SearchRequest(BaseModel):
     query: str
     top_k: int = 3
 
-# ── Shared helpers ─────────────────────────────────────────────────────────
-
+# ── Helpers ─────────────────────────────────────────────────────────
 def get_embedding(text: str) -> list[float]:
     headers = {"Authorization": EMBEDDING_API_KEY, "Content-Type": "application/json"}
     payload = {
@@ -92,7 +94,7 @@ def get_embedding(text: str) -> list[float]:
         "sparse_weight": 0.0,
         "convert_to_float32": True,
         "normalize_vectors": False,
-        "batch_size": 1,
+        "batch_size": 1, # take docs one by one
     }
     resp = requests.post(EMBEDDING_URL, json=payload, headers=headers, timeout=60)
     resp.raise_for_status()
@@ -105,13 +107,14 @@ def search_zilliz(query: str, top_k: int) -> list[dict]:
         anns_field="embedding",
         param={"metric_type": "COSINE", "params": {"nprobe": 10}},
         limit=top_k,
-        output_fields=["text", "title", "author", "category"]
+        output_fields=["text", "title", "author", "category", "url"] 
     )
     return [
         {
             "title":    hit.entity.get("title", ""),
             "category": hit.entity.get("category", ""),
             "author":   hit.entity.get("author", ""),
+            "url":      hit.entity.get("url", ""),   
             "text":     hit.entity.get("text", ""),
             "score":    hit.distance,
         }
@@ -119,14 +122,13 @@ def search_zilliz(query: str, top_k: int) -> list[dict]:
     ]
 
 # ── FastAPI endpoints ──────────────────────────────────────────────────────
-
 @app.post("/embed")
 def embed(body: EmbedRequest):
     try:
         return {"embedding": get_embedding(body.text)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
+    
 @app.post("/search")
 def search(body: SearchRequest):
     try:
@@ -137,36 +139,37 @@ def search(body: SearchRequest):
 
 # ── MCP tools ─────────────────────────────────────────────────────────────
 @mcp.tool()
-def search_medical_articles(query: str) -> str:  
+def search_medical_articles(query: str, top_k: int = 3) -> dict:
     """
     Search Altibbi Arabic medical articles for a given query.
-    It only answer using the content returned here.
-    Do NOT use any outside knowledge. If the answer is not in the results, say so.
-    Always end your response with a 'Sources' section listing all articles used.
+    Returns relevant articles from the database.
+    Only answer using the content returned. Do not use outside knowledge.
+    If the answer is not in the results, say so.
+    Always include the article URL when available.
     """
-    results = search_zilliz(query, top_k=3) 
+    results = search_zilliz(query, top_k=top_k)
     if not results:
-        return "No relevant articles found in the Altibbi database. Do not use outside knowledge."
+        return {
+            "success": False,
+            "message": "No relevant articles found in the Altibbi database.",
+            "articles": []
+        }
+    return {
+        "success": True,
+        "count": len(results),
+        "articles": [
+            {
+                "title":           r["title"],
+                "category":        r["category"],
+                "author":          r["author"],
+                "url":             r["url"],        
+                "relevance_score": round(r["score"], 3),
+                "content":         r["text"]
+            }
+            for r in results
+        ]
+    }
 
-    output = "IMPORTANT: Answer using ONLY the information below. Do not use outside knowledge.\n\n"
-    output += f"Query: '{query}'\n"
-    output += "=" * 50 + "\n\n"
-
-    for i, r in enumerate(results, 1):
-        output += f"[Source {i}] {r['title']}\n"
-        output += f"Category: {r['category']} | Author: {r['author']} | Score: {r['score']:.3f}\n"
-        output += f"{r['text']}\n"
-        output += "-" * 40 + "\n\n"
-
-    output += "=" * 50 + "\n"
-    output += "End of sources. Base your answer strictly on the above content only.\n\n"
-    output += "REQUIRED: After your answer, you MUST include this exact section:\n"
-    output += "---\n"
-    output += "📚 Sources from Altibbi database:\n"
-    for i, r in enumerate(results, 1):
-        output += f"{i}. {r['title']} (Category: {r['category']} | Relevance: {r['score']:.0%})\n"
-
-    return output
 
 @mcp.tool()
 def embed_text(text: str) -> str:
@@ -174,8 +177,65 @@ def embed_text(text: str) -> str:
     embedding = get_embedding(text)
     return f"Embedding dim: {len(embedding)}\nFirst 5 values: {embedding[:5]}"
 
-# ── Run ────────────────────────────────────────────────────────────────────
+ 
+@mcp.tool()
+def search_articles(
+    title:       Optional[str] = None,
+    author_name: Optional[str] = None,
+    category:    Optional[str] = None,
+    article_id:  Optional[int] = None,
+    top_k:       Optional[int] = None,
+) -> dict:
+    """
+    Search the `articles` MySQL table and return matching records.
+ 
+    Parameters
+    ----------
+    title       : Partial / full title to search (case-insensitive LIKE match).
+    author_name : Filter by author name (case-insensitive LIKE match).
+    category    : Filter by category (case-insensitive LIKE match).
+    article_id  : Look up a specific article by its primary key.
+    top_k       : Number of results to return (default: DEFAULT_TOP_K, max: MAX_TOP_K).
+    """
+ 
+    # ── top_k ──────────────────────────────
+    k = DEFAULT_TOP_K if top_k is None else int(top_k)
+    k = max(1, min(k, MAX_TOP_K))
+ 
+    # ── build query ──────────────────────────────
+    with Session(engine) as session:
+        statement = select(Article)
 
+        if article_id is not None:
+            statement = statement.where(Article.article_id == article_id)
+        if title:
+            statement = statement.where(Article.title.ilike(f"%{title}%"))
+        if author_name:
+            statement = statement.where(Article.author_name.ilike(f"%{author_name}%"))
+        if category:
+            statement = statement.where(Article.category.ilike(f"%{category}%"))
+
+        rows = session.exec(statement.limit(k)).all()
+ 
+    if not rows:
+        return {"success": False, "count": 0, "articles": []}
+ 
+    # ── build result dicts ────────────────────────
+    articles = []
+    for row in rows:
+        articles.append({
+            "article_id":  row.article_id,
+            "title":       row.title,
+            "author_name": row.author_name,
+            "category":    row.category,
+            "url":         row.url,
+            "body":        row.body,
+        })
+
+    return {"success": True, "count": len(articles), "articles": articles}
+  
+
+# ── Run ────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

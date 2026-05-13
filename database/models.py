@@ -19,6 +19,7 @@ class Article(SQLModel, table=True):
     pub_date: datetime
     author_name: Optional[str] = Field(default=None, max_length=255)
     category: Optional[str] = Field(default=None, max_length=255, index=True)
+    url: Optional[str] = Field(default=None, max_length=2048)  # ← add this
 
 
 
