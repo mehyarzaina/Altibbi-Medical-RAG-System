@@ -1,2 +1,3 @@
-**How to run this code** \n
+**How to run this code** 
+--------------------------
 python -m RAG.app.py
