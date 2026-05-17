@@ -10,6 +10,11 @@ __pycache__
 Altibbi Chatbot.docx
 articles_export.xlsx
 RAG\__pycache__
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
 
 database\__pycache__
 articles_scraping\__pycache__

@@ -7,7 +7,7 @@ from .helper import BASE_URL, LIST_URL, HEADERS, get_article_id, get_article_det
 from typing import Union, List
 
 
-def _scrape_page(page_num: int, session, save_fn, delay: float, skip_ids: set) -> int:
+def scrape_page(page_num: int, session, save_fn, delay: float, skip_ids: set) -> int:
     """
     Scrape a single listing page, save each article immediately via save_fn.
     Returns the count of articles saved.
@@ -83,7 +83,7 @@ def scrape(
 
     total_saved = 0
     for page_num in pages:
-        total_saved += _scrape_page(page_num, session, save_fn, delay, skip_ids)
+        total_saved += scrape_page(page_num, session, save_fn, delay, skip_ids)
 
     print(f"Done. Total articles saved: {total_saved}")
     return total_saved
