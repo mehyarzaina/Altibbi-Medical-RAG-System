@@ -130,10 +130,10 @@ Starts a FastAPI server on `http://0.0.0.0:8000` with:
 
 If `API_TOKEN` is set, non-local requests must include `Authorization: Bearer <token>` or `X-API-Key: <token>`.
 
-
-** How to run this code ** 
-
+**d. How to run this code:**
+```bash
 python -m RAG.app.py
+```
 
 ## Notes
 
